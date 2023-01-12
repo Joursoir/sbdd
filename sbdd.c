@@ -20,9 +20,6 @@
 #include <linux/moduleparam.h>
 #include <linux/spinlock_types.h>
 
-#define SBDD_SECTOR_SHIFT      9
-#define SBDD_SECTOR_SIZE       (1 << SBDD_SECTOR_SHIFT)
-#define SBDD_MIB_SECTORS       (1 << (20 - SBDD_SECTOR_SHIFT))
 #define SBDD_NAME              "sbdd"
 
 struct sbdd {
@@ -31,16 +28,14 @@ struct sbdd {
 	atomic_t                deleting;
 	atomic_t                refs_cnt;
 	sector_t                capacity;
-	u8                      *data;
 	struct gendisk          *gd;
 	struct request_queue    *q;
 };
 
 static struct sbdd      __sbdd;
 static int              __sbdd_major = 0;
-static unsigned long    __sbdd_capacity_mib = 100;
 
-static sector_t sbdd_xfer(struct bio_vec* bvec, sector_t pos, int dir)
+/*static sector_t sbdd_xfer(struct bio_vec* bvec, sector_t pos, int dir)
 {
 	void *buff = page_address(bvec->bv_page) + bvec->bv_offset;
 	sector_t len = bvec->bv_len >> SBDD_SECTOR_SHIFT;
@@ -65,17 +60,11 @@ static sector_t sbdd_xfer(struct bio_vec* bvec, sector_t pos, int dir)
 	pr_debug("pos=%6llu len=%4llu %s\n", pos, len, dir ? "written" : "read");
 
 	return len;
-}
+}*/
 
 static void sbdd_xfer_bio(struct bio *bio)
 {
-	struct bvec_iter iter;
-	struct bio_vec bvec;
-	int dir = bio_data_dir(bio);
-	sector_t pos = bio->bi_iter.bi_sector;
-
-	bio_for_each_segment(bvec, bio, iter)
-		pos += sbdd_xfer(&bvec, pos, dir);
+	/* TODO: send request to another device */
 }
 
 static blk_qc_t sbdd_make_request(struct request_queue *q, struct bio *bio)
@@ -121,14 +110,6 @@ static int sbdd_create(void)
 	}
 
 	memset(&__sbdd, 0, sizeof(struct sbdd));
-	__sbdd.capacity = (sector_t)__sbdd_capacity_mib * SBDD_MIB_SECTORS;
-
-	pr_info("allocating data\n");
-	__sbdd.data = vzalloc(__sbdd.capacity << SBDD_SECTOR_SHIFT);
-	if (!__sbdd.data) {
-		pr_err("unable to alloc data\n");
-		return -ENOMEM;
-	}
 
 	spin_lock_init(&__sbdd.datalock);
 	init_waitqueue_head(&__sbdd.exitwait);
@@ -140,9 +121,6 @@ static int sbdd_create(void)
 		return -EINVAL;
 	}
 	blk_queue_make_request(__sbdd.q, sbdd_make_request);
-
-	/* Configure queue */
-	blk_queue_logical_block_size(__sbdd.q, SBDD_SECTOR_SIZE);
 
 	/* A disk must have at least one minor */
 	pr_info("allocating disk\n");
@@ -187,11 +165,6 @@ static void sbdd_delete(void)
 
 	if (__sbdd.gd)
 		put_disk(__sbdd.gd);
-
-	if (__sbdd.data) {
-		pr_info("freeing data\n");
-		vfree(__sbdd.data);
-	}
 
 	memset(&__sbdd, 0, sizeof(struct sbdd));
 
@@ -241,9 +214,6 @@ module_init(sbdd_init);
 
 /* Called on module unloading. Unloading module is not allowed without it. */
 module_exit(sbdd_exit);
-
-/* Set desired capacity with insmod */
-module_param_named(capacity_mib, __sbdd_capacity_mib, ulong, S_IRUGO);
 
 /* Note for the kernel: a free license module. A warning will be outputted without it. */
 MODULE_LICENSE("GPL");
