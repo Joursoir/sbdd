@@ -21,6 +21,8 @@
 #include <linux/spinlock_types.h>
 
 #define SBDD_NAME              "sbdd"
+#define SBDD_BDEV_MODE         (FMODE_READ | FMODE_WRITE)
+#define TARGET_DEV             "/dev/disk/by-id/ata-QEMU_HARDDISK_QM00001"
 
 struct sbdd {
 	wait_queue_head_t       exitwait;
@@ -30,6 +32,7 @@ struct sbdd {
 	sector_t                capacity;
 	struct gendisk          *gd;
 	struct request_queue    *q;
+	struct block_device     *bdev;
 };
 
 static struct sbdd      __sbdd;
@@ -97,6 +100,8 @@ static struct block_device_operations const __sbdd_bdev_ops = {
 static int sbdd_create(void)
 {
 	int ret = 0;
+	unsigned short lblock_size;
+	unsigned int max_sectors;
 
 	/*
 	This call is somewhat redundant, but used anyways by tradition.
@@ -126,6 +131,20 @@ static int sbdd_create(void)
 	pr_info("allocating disk\n");
 	__sbdd.gd = alloc_disk(1);
 
+	/* Get a handle on the device */
+	pr_info("opening %s\n", TARGET_DEV);
+	__sbdd.bdev = blkdev_get_by_path(TARGET_DEV, SBDD_BDEV_MODE, THIS_MODULE);
+	if (!__sbdd.bdev || IS_ERR(__sbdd.bdev)) {
+		pr_err("blkdev_get_by_path(\"%s\") failed with %ld\n",
+				TARGET_DEV, PTR_ERR(__sbdd.bdev));
+		return -ENOENT;
+	}
+
+	/* Configure queue */
+	lblock_size = bdev_logical_block_size(__sbdd.bdev);
+	blk_queue_logical_block_size(__sbdd.q, lblock_size);
+	pr_info("\tlogical block size: %u\n", lblock_size);
+
 	/* Configure gendisk */
 	__sbdd.gd->queue = __sbdd.q;
 	__sbdd.gd->major = __sbdd_major;
@@ -133,7 +152,13 @@ static int sbdd_create(void)
 	__sbdd.gd->fops = &__sbdd_bdev_ops;
 	/* Represents name in /proc/partitions and /sys/block */
 	scnprintf(__sbdd.gd->disk_name, DISK_NAME_LEN, SBDD_NAME);
+	__sbdd.capacity = get_capacity(__sbdd.bdev->bd_disk);
 	set_capacity(__sbdd.gd, __sbdd.capacity);
+	pr_info("\tdevice capacity: %llu\n", __sbdd.capacity);
+
+	max_sectors = queue_max_hw_sectors(bdev_get_queue(__sbdd.bdev));
+	blk_queue_max_hw_sectors(__sbdd.q, max_sectors);
+	pr_info("\tmax sectors: %u\n", max_sectors);
 
 	/*
 	Allocating gd does not make it available, add_disk() required.
@@ -156,6 +181,11 @@ static void sbdd_delete(void)
 	if (__sbdd.gd) {
 		pr_info("deleting disk\n");
 		del_gendisk(__sbdd.gd);
+	}
+
+	if (__sbdd.bdev) {
+		pr_info("release a handle on the %s\n", TARGET_DEV);
+		blkdev_put(__sbdd.bdev, SBDD_BDEV_MODE);
 	}
 
 	if (__sbdd.q) {
