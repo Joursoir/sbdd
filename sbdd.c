@@ -22,7 +22,6 @@
 
 #define SBDD_NAME              "sbdd"
 #define SBDD_BDEV_MODE         (FMODE_READ | FMODE_WRITE)
-#define TARGET_DEV             "/dev/disk/by-id/ata-QEMU_HARDDISK_QM00001"
 
 struct sbdd {
 	wait_queue_head_t       exitwait;
@@ -37,6 +36,7 @@ struct sbdd {
 
 static struct sbdd      __sbdd;
 static int              __sbdd_major = 0;
+static char             *__sbdd_disk = "/dev/disk/by-id/ata-QEMU_HARDDISK_QM00001";
 
 /*static sector_t sbdd_xfer(struct bio_vec* bvec, sector_t pos, int dir)
 {
@@ -132,11 +132,11 @@ static int sbdd_create(void)
 	__sbdd.gd = alloc_disk(1);
 
 	/* Get a handle on the device */
-	pr_info("opening %s\n", TARGET_DEV);
-	__sbdd.bdev = blkdev_get_by_path(TARGET_DEV, SBDD_BDEV_MODE, THIS_MODULE);
+	pr_info("opening %s\n", __sbdd_disk);
+	__sbdd.bdev = blkdev_get_by_path(__sbdd_disk, SBDD_BDEV_MODE, THIS_MODULE);
 	if (!__sbdd.bdev || IS_ERR(__sbdd.bdev)) {
 		pr_err("blkdev_get_by_path(\"%s\") failed with %ld\n",
-				TARGET_DEV, PTR_ERR(__sbdd.bdev));
+				__sbdd_disk, PTR_ERR(__sbdd.bdev));
 		return -ENOENT;
 	}
 
@@ -184,7 +184,7 @@ static void sbdd_delete(void)
 	}
 
 	if (__sbdd.bdev) {
-		pr_info("release a handle on the %s\n", TARGET_DEV);
+		pr_info("release a handle on the %s\n", __sbdd_disk);
 		blkdev_put(__sbdd.bdev, SBDD_BDEV_MODE);
 	}
 
@@ -244,6 +244,9 @@ module_init(sbdd_init);
 
 /* Called on module unloading. Unloading module is not allowed without it. */
 module_exit(sbdd_exit);
+
+/* Set desired target disk with insmod */
+module_param_named(disk, __sbdd_disk, charp, S_IRUGO);
 
 /* Note for the kernel: a free license module. A warning will be outputted without it. */
 MODULE_LICENSE("GPL");
