@@ -39,3 +39,13 @@ default:
 	$(MAKE) -C /lib/modules/$(shell uname -r)/build M=$(shell pwd) modules
 clean:
 	$(MAKE) -C /lib/modules/$(shell uname -r)/build M=$(shell pwd) clean
+
+load:
+	dmesg -C
+	insmod sbdd.ko
+	dmesg
+
+unload:
+	dmesg -C
+	rmmod sbdd.ko
+	dmesg
