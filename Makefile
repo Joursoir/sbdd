@@ -35,6 +35,8 @@
 
 ######## Makefile
 
+TARG_BLK = /dev/disk/by-id/ata-QEMU_HARDDISK_QM00001
+
 default:
 	$(MAKE) -C /lib/modules/$(shell uname -r)/build M=$(shell pwd) modules
 clean:
@@ -42,7 +44,7 @@ clean:
 
 load:
 	dmesg -C
-	insmod sbdd.ko
+	insmod sbdd.ko disk="$(TARG_BLK)"
 	dmesg
 
 unload:
