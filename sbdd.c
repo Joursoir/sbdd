@@ -36,7 +36,27 @@ struct sbdd {
 
 static struct sbdd      __sbdd;
 static int              __sbdd_major = 0;
+static struct bio_set   __sbdd_bio_set;
 static char             *__sbdd_disk = "/dev/disk/by-id/ata-QEMU_HARDDISK_QM00001";
+
+struct sbdd_io_bio {
+	struct bio              *original_bio;
+};
+
+static void io_end_bio(struct bio *bio)
+{
+	struct sbdd_io_bio *io_bio = bio->bi_private;
+
+	pr_debug("I/O operation is completed\n");
+
+	io_bio->original_bio->bi_status = bio->bi_status;
+	bio_endio(io_bio->original_bio);
+	bio_put(bio);
+	kfree(io_bio);
+
+	if (atomic_dec_and_test(&__sbdd.refs_cnt))
+		wake_up(&__sbdd.exitwait);
+}
 
 /*static sector_t sbdd_xfer(struct bio_vec* bvec, sector_t pos, int dir)
 {
@@ -67,7 +87,29 @@ static char             *__sbdd_disk = "/dev/disk/by-id/ata-QEMU_HARDDISK_QM0000
 
 static void sbdd_xfer_bio(struct bio *bio)
 {
-	/* TODO: send request to another device */
+	struct bio *bio_clone;
+	struct sbdd_io_bio *io_bio;
+
+	io_bio = kmalloc(sizeof(*io_bio), GFP_KERNEL);
+	if (!io_bio) {
+		pr_err("unable to allocate space for struct io_bio\n");
+		return;
+	}
+	io_bio->original_bio = bio;
+
+	bio_clone = bio_clone_fast(bio, GFP_NOIO, &__sbdd_bio_set);
+	if (!bio_clone) {
+		pr_err("unable to clone bio\n");
+		kfree(io_bio);
+		return;
+	}
+
+	bio_set_dev(bio_clone, __sbdd.bdev);
+	bio_clone->bi_private = io_bio;
+	bio_clone->bi_end_io = io_end_bio;
+
+	pr_debug("submitting bio...\n");
+	submit_bio(bio_clone);
 }
 
 static blk_qc_t sbdd_make_request(struct request_queue *q, struct bio *bio)
@@ -81,10 +123,6 @@ static blk_qc_t sbdd_make_request(struct request_queue *q, struct bio *bio)
 	atomic_inc(&__sbdd.refs_cnt);
 
 	sbdd_xfer_bio(bio);
-	bio_endio(bio);
-
-	if (atomic_dec_and_test(&__sbdd.refs_cnt))
-		wake_up(&__sbdd.exitwait);
 
 	return BLK_STS_OK;
 }
@@ -102,6 +140,12 @@ static int sbdd_create(void)
 	int ret = 0;
 	unsigned short lblock_size;
 	unsigned int max_sectors;
+
+	ret = bioset_init(&__sbdd_bio_set, BIO_POOL_SIZE, 0, 0);
+	if (ret) {
+		pr_err("create BIO set failed: %d\n", ret);
+		return ret;
+	}
 
 	/*
 	This call is somewhat redundant, but used anyways by tradition.
@@ -203,6 +247,8 @@ static void sbdd_delete(void)
 		unregister_blkdev(__sbdd_major, SBDD_NAME);
 		__sbdd_major = 0;
 	}
+
+	bioset_exit(&__sbdd_bio_set);
 }
 
 /*
