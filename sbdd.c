@@ -105,6 +105,7 @@ static void sbdd_xfer_bio(struct bio *bio)
 	}
 
 	bio_set_dev(bio_clone, __sbdd.bdev);
+	bio_clone->bi_opf |= REQ_PREFLUSH | REQ_FUA;
 	bio_clone->bi_private = io_bio;
 	bio_clone->bi_end_io = io_end_bio;
 
