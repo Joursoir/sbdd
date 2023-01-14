@@ -36,6 +36,8 @@
 ######## Makefile
 
 TARG_BLK = /dev/disk/by-id/ata-QEMU_HARDDISK_QM00001
+SBDD_BLK = /dev/sbdd
+DD_ARGS  = bs=512 count=1
 
 default:
 	$(MAKE) -C /lib/modules/$(shell uname -r)/build M=$(shell pwd) modules
@@ -51,3 +53,17 @@ unload:
 	dmesg -C
 	rmmod sbdd.ko
 	dmesg
+
+test1:
+	dd $(DD_ARGS) if=/dev/urandom of=$(SBDD_BLK)
+	blockdev --flushbufs $(TARG_BLK)
+	dd $(DD_ARGS) if=$(TARG_BLK) of=./drive.log
+	dd $(DD_ARGS) if=$(SBDD_BLK) of=./sbdd.log
+	diff ./sbdd.log ./drive.log
+
+test2:
+	dd $(DD_ARGS) if=/dev/urandom of=$(TARG_BLK)
+	dd $(DD_ARGS) if=$(TARG_BLK) of=./drive.log
+	dd $(DD_ARGS) if=$(SBDD_BLK) of=./sbdd.log
+	diff ./sbdd.log ./drive.log
+
