@@ -48,7 +48,7 @@ clean:
 
 load:
 	dmesg -C
-	insmod sbdd.ko disk="$(TARG_BLK)" disklist=$(DISK_LIST)
+	insmod sbdd.ko disklist=$(DISK_LIST)
 	dmesg
 
 unload:

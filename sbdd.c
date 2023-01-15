@@ -38,14 +38,12 @@ struct sbdd {
 	sector_t                capacity;
 	struct gendisk          *gd;
 	struct request_queue    *q;
-	struct block_device     *bdev;
 	struct raiddisk         disks[MAX_RAID_DISK];
 };
 
 static struct sbdd      __sbdd;
 static int              __sbdd_major = 0;
 static struct bio_set   __sbdd_bio_set;
-static char             *__sbdd_disk = "/dev/disk/by-id/ata-QEMU_HARDDISK_QM00001";
 
 static char *__sbdd_disklist[MAX_RAID_DISK] = { NULL };
 static unsigned int __sbdd_diskcount;
@@ -214,15 +212,6 @@ static int sbdd_create(void)
 	pr_info("allocating disk\n");
 	__sbdd.gd = alloc_disk(1);
 
-	/* Get a handle on the device */
-	pr_info("opening %s\n", __sbdd_disk);
-	__sbdd.bdev = blkdev_get_by_path(__sbdd_disk, SBDD_BDEV_MODE, THIS_MODULE);
-	if (!__sbdd.bdev || IS_ERR(__sbdd.bdev)) {
-		pr_err("blkdev_get_by_path(\"%s\") failed with %ld\n",
-				__sbdd_disk, PTR_ERR(__sbdd.bdev));
-		return -ENOENT;
-	}
-
 	for (disk = 0; disk < __sbdd_diskcount; disk++) {
 		pr_info("[%d] opening %s", disk, __sbdd_disklist[disk]);
 
@@ -303,11 +292,6 @@ static void sbdd_delete(void)
 		del_gendisk(__sbdd.gd);
 	}
 
-	if (__sbdd.bdev) {
-		pr_info("release a handle on the %s\n", __sbdd_disk);
-		blkdev_put(__sbdd.bdev, SBDD_BDEV_MODE);
-	}
-
 	for (disk = 0; disk < __sbdd_diskcount; disk++) {
 		if (__sbdd.disks[disk].bdev) {
 			pr_info("release a handle on the %s\n", __sbdd_disklist[disk]);
@@ -373,9 +357,6 @@ module_init(sbdd_init);
 
 /* Called on module unloading. Unloading module is not allowed without it. */
 module_exit(sbdd_exit);
-
-/* Set desired target disk with insmod */
-module_param_named(disk, __sbdd_disk, charp, S_IRUGO);
 
 /* Set desired disk list with insmod */
 module_param_array_named(disklist, __sbdd_disklist, charp, &__sbdd_diskcount, S_IRUGO);
