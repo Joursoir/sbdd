@@ -36,6 +36,8 @@
 ######## Makefile
 
 TARG_BLK = /dev/disk/by-id/ata-QEMU_HARDDISK_QM00001
+TARG_BLK2 = /dev/disk/by-id/ata-QEMU_HARDDISK_QM00003
+DISK_LIST = "$(TARG_BLK),$(TARG_BLK2)"
 SBDD_BLK = /dev/sbdd
 DD_ARGS  = bs=512 count=1
 
@@ -46,7 +48,7 @@ clean:
 
 load:
 	dmesg -C
-	insmod sbdd.ko disk="$(TARG_BLK)"
+	insmod sbdd.ko disk="$(TARG_BLK)" disklist=$(DISK_LIST)
 	dmesg
 
 unload:

@@ -22,6 +22,13 @@
 
 #define SBDD_NAME              "sbdd"
 #define SBDD_BDEV_MODE         (FMODE_READ | FMODE_WRITE)
+#define MAX_RAID_DISK          6
+
+struct raiddisk {
+	sector_t                capacity;
+	unsigned int            max_sectors;
+	struct block_device     *bdev;
+};
 
 struct sbdd {
 	wait_queue_head_t       exitwait;
@@ -32,12 +39,16 @@ struct sbdd {
 	struct gendisk          *gd;
 	struct request_queue    *q;
 	struct block_device     *bdev;
+	struct raiddisk         disks[MAX_RAID_DISK];
 };
 
 static struct sbdd      __sbdd;
 static int              __sbdd_major = 0;
 static struct bio_set   __sbdd_bio_set;
 static char             *__sbdd_disk = "/dev/disk/by-id/ata-QEMU_HARDDISK_QM00001";
+
+static char *__sbdd_disklist[MAX_RAID_DISK] = { NULL };
+static unsigned int __sbdd_diskcount;
 
 struct sbdd_io_bio {
 	struct bio              *original_bio;
@@ -139,8 +150,10 @@ static struct block_device_operations const __sbdd_bdev_ops = {
 static int sbdd_create(void)
 {
 	int ret = 0;
+	int disk = 0;
 	unsigned short lblock_size;
 	unsigned int max_sectors;
+	sector_t totalsize = 0;
 
 	ret = bioset_init(&__sbdd_bio_set, BIO_POOL_SIZE, 0, 0);
 	if (ret) {
@@ -185,6 +198,40 @@ static int sbdd_create(void)
 		return -ENOENT;
 	}
 
+	for (disk = 0; disk < __sbdd_diskcount; disk++) {
+		pr_info("[%d] opening %s", disk, __sbdd_disklist[disk]);
+
+		__sbdd.disks[disk].bdev = blkdev_get_by_path(
+				__sbdd_disklist[disk], SBDD_BDEV_MODE, THIS_MODULE);
+		if (!__sbdd.disks[disk].bdev || IS_ERR(__sbdd.disks[disk].bdev)) {
+			pr_err("blkdev_get_by_path(\"%s\") failed with %ld\n",
+					__sbdd_disklist[disk],
+					PTR_ERR(__sbdd.disks[disk].bdev));
+			return -ENOENT;
+		}
+
+		/* Set up device characteristics */
+		__sbdd.disks[disk].capacity = get_capacity(__sbdd.disks[disk].bdev->bd_disk);
+		pr_info("[%d] capacity: %llu\n", disk, __sbdd.disks[disk].capacity);
+
+		/* Get the smallest disk size in the set */
+		if (disk == 0) {
+			totalsize = __sbdd.disks[disk].capacity;
+		} else {
+			if (__sbdd.disks[disk].capacity < totalsize) {
+				totalsize = __sbdd.disks[disk].capacity;
+			}
+		}
+		__sbdd.disks[disk].max_sectors = queue_max_hw_sectors(bdev_get_queue(__sbdd.disks[disk].bdev));
+		pr_info("[%d] max_sectors = %d\n", disk, __sbdd.disks[disk].max_sectors);
+	}
+
+	pr_info("%d disks processed\n", disk);
+
+	disk--;
+	/* `totalsize` equals the smallest disk size, simply multiple it out to disk count */
+	totalsize *= __sbdd_diskcount;
+
 	/* Configure queue */
 	lblock_size = bdev_logical_block_size(__sbdd.bdev);
 	blk_queue_logical_block_size(__sbdd.q, lblock_size);
@@ -218,6 +265,8 @@ static int sbdd_create(void)
 
 static void sbdd_delete(void)
 {
+	int disk;
+
 	atomic_set(&__sbdd.deleting, 1);
 
 	wait_event(__sbdd.exitwait, !atomic_read(&__sbdd.refs_cnt));
@@ -231,6 +280,13 @@ static void sbdd_delete(void)
 	if (__sbdd.bdev) {
 		pr_info("release a handle on the %s\n", __sbdd_disk);
 		blkdev_put(__sbdd.bdev, SBDD_BDEV_MODE);
+	}
+
+	for (disk = 0; disk < __sbdd_diskcount; disk++) {
+		if (__sbdd.disks[disk].bdev) {
+			pr_info("release a handle on the %s\n", __sbdd_disklist[disk]);
+			blkdev_put(__sbdd.disks[disk].bdev, SBDD_BDEV_MODE);
+		}
 	}
 
 	if (__sbdd.q) {
@@ -294,6 +350,9 @@ module_exit(sbdd_exit);
 
 /* Set desired target disk with insmod */
 module_param_named(disk, __sbdd_disk, charp, S_IRUGO);
+
+/* Set desired disk list with insmod */
+module_param_array_named(disklist, __sbdd_disklist, charp, &__sbdd_diskcount, S_IRUGO);
 
 /* Note for the kernel: a free license module. A warning will be outputted without it. */
 MODULE_LICENSE("GPL");
