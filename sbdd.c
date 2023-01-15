@@ -59,6 +59,11 @@ static void io_end_bio(struct bio *bio)
 
 	pr_debug("I/O operation is completed\n");
 
+	if (bio->bi_status != BLK_STS_OK) {
+		pr_err("oops, error during I/O operation...");
+		/* TODO: handle errors */
+	}
+
 	io_bio->original_bio->bi_status = bio->bi_status;
 	bio_put(bio);
 
