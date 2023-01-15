@@ -178,6 +178,11 @@ static int sbdd_create(void)
 	unsigned int max_sectors;
 	sector_t totalsize = 0;
 
+	if (__sbdd_diskcount < 2) {
+		pr_err("not enough disks to make a RAID0\n");
+		return -EFAULT;
+	}
+
 	ret = bioset_init(&__sbdd_bio_set, BIO_POOL_SIZE, 0, 0);
 	if (ret) {
 		pr_err("create BIO set failed: %d\n", ret);
