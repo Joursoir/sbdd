@@ -52,6 +52,7 @@ static unsigned int __sbdd_diskcount;
 
 struct sbdd_io_bio {
 	struct bio              *original_bio;
+	atomic_t                pending_ios;
 };
 
 static void io_end_bio(struct bio *bio)
@@ -61,12 +62,16 @@ static void io_end_bio(struct bio *bio)
 	pr_debug("I/O operation is completed\n");
 
 	io_bio->original_bio->bi_status = bio->bi_status;
-	bio_endio(io_bio->original_bio);
 	bio_put(bio);
-	kfree(io_bio);
 
-	if (atomic_dec_and_test(&__sbdd.refs_cnt))
-		wake_up(&__sbdd.exitwait);
+	if (atomic_dec_and_test(&io_bio->pending_ios)) {
+		pr_debug("original bio is freed\n");
+		bio_endio(io_bio->original_bio);
+		kfree(io_bio);
+		
+		if (atomic_dec_and_test(&__sbdd.refs_cnt))
+			wake_up(&__sbdd.exitwait);
+	}
 }
 
 /*static sector_t sbdd_xfer(struct bio_vec* bvec, sector_t pos, int dir)
@@ -98,8 +103,12 @@ static void io_end_bio(struct bio *bio)
 
 static void sbdd_xfer_bio(struct bio *bio)
 {
+	int i;
 	struct bio *bio_clone;
 	struct sbdd_io_bio *io_bio;
+	struct block_device *bdev;
+	sector_t sector = bio->bi_iter.bi_sector;
+	int nr_sectors = bio->bi_iter.bi_size / SECTOR_SIZE;
 
 	io_bio = kmalloc(sizeof(*io_bio), GFP_KERNEL);
 	if (!io_bio) {
@@ -107,21 +116,37 @@ static void sbdd_xfer_bio(struct bio *bio)
 		return;
 	}
 	io_bio->original_bio = bio;
+	atomic_set(&io_bio->pending_ios, nr_sectors);
 
-	bio_clone = bio_clone_fast(bio, GFP_NOIO, &__sbdd_bio_set);
-	if (!bio_clone) {
-		pr_err("unable to clone bio\n");
-		kfree(io_bio);
-		return;
+	for (i = 0; i < nr_sectors; i++) {
+		bio_clone = bio_clone_fast(bio, GFP_NOIO, &__sbdd_bio_set);
+		if (!bio_clone) {
+			pr_err("unable to clone bio\n");
+			if (atomic_dec_and_test(&io_bio->pending_ios)) {
+				bio_endio(bio);
+				kfree(io_bio);
+				// TODO: dec refs_cnt too
+			}
+			return;
+		}
+
+		bdev = __sbdd.disks[sector % __sbdd_diskcount].bdev;
+		bio_set_dev(bio_clone, bdev);
+		bio_clone->bi_iter.bi_sector = sector;
+		bio_clone->bi_iter.bi_size = SECTOR_SIZE;
+		bio_clone->bi_opf |= REQ_PREFLUSH | REQ_FUA;
+		bio_clone->bi_private = io_bio;
+		bio_clone->bi_end_io = io_end_bio;
+
+		pr_debug("[bio_clone] start sector = 0x%6llx size = %6lld bytes %s\n",
+			(unsigned long long)bio_clone->bi_iter.bi_sector,
+			(unsigned long long)bio_clone->bi_iter.bi_size,
+			bio_data_dir(bio_clone) ? "WRITE" : "READ");
+
+		pr_debug("submitting bio to %s\n", __sbdd_disklist[sector % __sbdd_diskcount]);
+		submit_bio(bio_clone);
+		sector++;
 	}
-
-	bio_set_dev(bio_clone, __sbdd.bdev);
-	bio_clone->bi_opf |= REQ_PREFLUSH | REQ_FUA;
-	bio_clone->bi_private = io_bio;
-	bio_clone->bi_end_io = io_end_bio;
-
-	pr_debug("submitting bio...\n");
-	submit_bio(bio_clone);
 }
 
 static blk_qc_t sbdd_make_request(struct request_queue *q, struct bio *bio)
@@ -233,7 +258,7 @@ static int sbdd_create(void)
 	totalsize *= __sbdd_diskcount;
 
 	/* Configure queue */
-	lblock_size = bdev_logical_block_size(__sbdd.bdev);
+	lblock_size = bdev_logical_block_size(__sbdd.disks[disk].bdev);
 	blk_queue_logical_block_size(__sbdd.q, lblock_size);
 	pr_info("\tlogical block size: %u\n", lblock_size);
 
@@ -244,11 +269,12 @@ static int sbdd_create(void)
 	__sbdd.gd->fops = &__sbdd_bdev_ops;
 	/* Represents name in /proc/partitions and /sys/block */
 	scnprintf(__sbdd.gd->disk_name, DISK_NAME_LEN, SBDD_NAME);
-	__sbdd.capacity = get_capacity(__sbdd.bdev->bd_disk);
+	__sbdd.capacity = totalsize;
 	set_capacity(__sbdd.gd, __sbdd.capacity);
-	pr_info("\tdevice capacity: %llu\n", __sbdd.capacity);
+	pr_info("\ttotal capacity: %llu sectors\n", __sbdd.capacity);
 
-	max_sectors = queue_max_hw_sectors(bdev_get_queue(__sbdd.bdev));
+	/* Just set it from the last disk */
+	max_sectors = __sbdd.disks[disk].max_sectors;
 	blk_queue_max_hw_sectors(__sbdd.q, max_sectors);
 	pr_info("\tmax sectors: %u\n", max_sectors);
 
